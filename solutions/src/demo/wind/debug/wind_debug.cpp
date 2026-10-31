@@ -2,10 +2,11 @@
  * @file wind_debug.cpp
  * @brief 風発生器の操作とシミュレーションを統合する。
  * @date 2026-10-30
- * @par 最終更新日 2026-10-31
+ * @par 最終更新日 2026-11-01
  */
 #include "wind_debug_internal.h"
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
@@ -60,6 +61,7 @@ void WindDebug::Impl::Reset(const render::Camera& i_camera)
 {
     selected.reset();
     draft   =   motor::Settings{};
+    draftRotation = MotorRotation{};
 
     // カメラの前方に新しい発生器を配置するための位置を計算する
     const auto position =   CameraPoint(i_camera.Position());
@@ -129,12 +131,14 @@ bool WindDebug::CreateAt(const std::array<float, defs::kAxisCount>& i_position)
     try
     {
         // 編集中の形状や風速はそのまま使い、位置だけをクリック地点に置き換える。
+        ValidateMotorRotation(impl.draftRotation);
         const auto result   =   Create(settings);
         impl.message        =   result.message;
         if (result.status == motor::RequestStatus::Succeeded && result.id && result.settings)
         {
             impl.selected   =   *result.id;         // 選択状態にする
             impl.draft      =   *result.settings;   // 編集中の設定を更新する
+            impl.entries.back().rotation = impl.draftRotation;
             return true;
         }
         if (impl.message.empty()) { impl.message = "発生器を生成できませんでした。"; }
@@ -215,7 +219,10 @@ void WindDebug::Remove(const motor::MotorId i_id)
  */
 std::vector<motor::Motor> WindDebug::Entries() const
 {
-    return m_instImpl->entries;
+    auto result = std::vector<motor::Motor>{};
+    result.reserve(m_instImpl->entries.size());
+    for (const auto& entry : m_instImpl->entries) { result.push_back({entry.id, entry.settings}); }
+    return result;
 }
 
 /**
@@ -249,6 +256,32 @@ void WindDebug::Advance(const double i_elapsed,
     if (impl.frame == std::numeric_limits<std::uint64_t>::max())
     {
         throw std::overflow_error("風の表示用フレーム番号を使い切りました。");
+    }
+
+    if (!std::isfinite(i_elapsed) || i_elapsed < 0.0)
+    {
+        throw std::invalid_argument("風の経過時間は 0 以上の有限値で指定してください。");
+    }
+
+    // 未適用の方向入力は保持し、編集していない場合だけ現在の方向へ追従させる。
+    for (auto& entry : impl.entries)
+    {
+        if (!entry.settings.enabled || !entry.rotation.enabled ||
+            entry.rotation.degreesPerSecond == 0.0F || i_elapsed == 0.0) { continue; }
+        auto settings = entry.settings;
+        settings.direction = RotateMotorDirection(settings.direction, entry.rotation, i_elapsed);
+        try { ValidateDisplay(settings); }
+        catch (const std::invalid_argument& i_error)
+        {
+            entry.rotation.enabled = false;
+            if (impl.selected == entry.id) { impl.draftRotation.enabled = false; }
+            impl.message = "発生器 " + std::to_string(entry.id) + " の自動回転を停止しました: " + i_error.what();
+            continue;
+        }
+        const auto followDirection = impl.selected == entry.id && impl.draft.direction == entry.settings.direction;
+        const auto result = impl.motors.Set(entry.id, settings);
+        entry.settings = result.settings;
+        if (followDirection) { impl.draft.direction = result.settings.direction; }
     }
 
     // 風の更新を行い、空間の更新回数を取得する

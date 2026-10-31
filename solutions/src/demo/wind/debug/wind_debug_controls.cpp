@@ -4,7 +4,7 @@
  * @details 発生器と基本風の編集、処理負荷の表示、風管理空間の断面画像とセル値の確認を担当する。
  * 描画やシミュレーションの実処理は各機能のクラスへ委譲し、このファイルでは ImGui の入力と表示を扱う。
  * @date 2026-10-30
- * @par 最終更新日 2026-10-31
+ * @par 最終更新日 2026-11-01
  */
 #include "wind_debug_internal.h"
 #include "../beaufort.h"
@@ -89,6 +89,7 @@ void WindDebug::ShowMotorControls(const render::Camera& i_camera)
         {
             impl.selected = entry.id;
             impl.draft = entry.settings;
+            impl.draftRotation = entry.rotation;
             impl.message.clear();
         }
     }
@@ -106,6 +107,9 @@ void WindDebug::ShowMotorControls(const render::Camera& i_camera)
     // 球には長さの設定がないため、球以外の形状に限って長さを編集可能にする。
     ImGui::InputFloat3("位置 (m)", impl.draft.position.data());
     ImGui::InputFloat3("方向", impl.draft.direction.data());
+    ImGui::Checkbox("自動回転", &impl.draftRotation.enabled);
+    ImGui::InputFloat3("回転軸 (ワールド)", impl.draftRotation.axis.data());
+    ImGui::InputFloat("角速度 (度/秒)", &impl.draftRotation.degreesPerSecond);
     ImGui::InputFloat("風速 (m/s)", &impl.draft.speed);
     ImGui::InputFloat("直径 (m)", &impl.draft.diameter);
     if (impl.draft.shape != motor::Shape::Sphere) { ImGui::InputFloat("長さ (m)", &impl.draft.length); }
@@ -127,6 +131,7 @@ void WindDebug::ShowMotorControls(const render::Camera& i_camera)
     {
         try
         {
+            ValidateMotorRotation(impl.draftRotation);
             // 描画不能な座標を先に拒否し、生成後に表示だけが失敗することを避ける。
             if (impl.selected)
             {
@@ -137,7 +142,13 @@ void WindDebug::ShowMotorControls(const render::Camera& i_camera)
                     // 更新によって発生器が削除された場合は編集対象も新規作成状態へ戻す。
                     impl.Reset(i_camera);
                 }
-                else { impl.draft = result.settings; }
+                else
+                {
+                    impl.draft = result.settings;
+                    const auto found = std::find_if(impl.entries.begin(), impl.entries.end(),
+                                                    [&](const auto& i_entry) { return i_entry.id == *impl.selected; });
+                    found->rotation = impl.draftRotation;
+                }
             }
             else
             {
@@ -148,6 +159,7 @@ void WindDebug::ShowMotorControls(const render::Camera& i_camera)
                     // 生成成功後は新しい発生器を選択し、適用済み設定を次の編集値にする。
                     impl.selected = *result.id;
                     impl.draft = *result.settings;
+                    impl.entries.back().rotation = impl.draftRotation;
                 }
                 else if (impl.message.empty()) { impl.message = "発生器を生成できませんでした。"; }
             }

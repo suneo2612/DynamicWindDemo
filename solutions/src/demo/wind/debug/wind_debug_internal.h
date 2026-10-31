@@ -2,13 +2,14 @@
  * @file wind_debug_internal.h
  * @brief 風デバッグ機能の内部状態を共有する。
  * @date 2026-10-30
- * @par 最終更新日 2026-10-30
+ * @par 最終更新日 2026-11-01
  */
 #pragma once
 #ifndef DYNAMIC_WIND_DEMO_DEMO_WIND_DEBUG_WIND_DEBUG_INTERNAL_H
 #define DYNAMIC_WIND_DEMO_DEMO_WIND_DEBUG_WIND_DEBUG_INTERNAL_H
 
 #include "wind_debug.h"
+#include "motor_rotation.h"
 #include "wind_debug_preview.h"
 #include <cstdint>
 #include <optional>
@@ -21,6 +22,16 @@ namespace demo::wind::debug
  */
 struct WindDebug::Impl
 {
+    /**
+     * @brief 発生器とそのデバッグ用回転設定。
+     */
+    struct Entry
+    {
+        motor::MotorId id;       // 発生器の識別番号
+        motor::Settings settings; // 現在適用中の設定
+        MotorRotation rotation{}; // 現在適用中の自動回転
+    };
+
     motor::WindMotors motors{};                                     // デバッグ専用枠を持つ発生器管理器
     WindRegionSettings regionSettings{};                            // 管理空間の寸法
     simulation::WindSimulation simulation;                          // カメラに追従する風の管理空間
@@ -34,9 +45,10 @@ struct WindDebug::Impl
     std::optional<std::array<int, defs::kAxisCount>> gridOrigin{};  // 保存した格子の原点
     std::vector<std::array<float, defs::kAxisCount>> gridLines{};   // 保存した格子線
     bool volumeOpen = true;                                         // 風データ画面の表示状態
-    std::vector<motor::Motor> entries{};                            // 画面から生成した発生器
+    std::vector<Entry> entries{};                                   // 画面から生成した発生器
     std::optional<motor::MotorId> selected{};                       // 編集中の発生器
     motor::Settings draft{};                                        // 編集中または新規作成用の設定
+    MotorRotation draftRotation{};                                  // 編集中の自動回転設定
     std::array<float, defs::kAxisCount> baseWind{};                 // 実際に適用中の基本風
     std::array<float, defs::kAxisCount> draftBase{};                // 編集中の基本風
     std::string message{};                                          // 操作結果または入力エラー

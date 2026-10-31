@@ -109,6 +109,8 @@ set(DYNAMIC_WIND_DEMO_APPLICATION_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/solutions/src/demo/application/stage_assets.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/solutions/src/demo/application/stage_controls.cpp")
 set(WIND_DEBUG_SOURCES
+    "${WIND_DEBUG_DIRECTORY}/motor_rotation.cpp"
+    "${WIND_DEBUG_DIRECTORY}/motor_rotation.h"
     "${WIND_DEBUG_DIRECTORY}/wind_debug.cpp"
     "${WIND_DEBUG_DIRECTORY}/wind_debug.h"
     "${WIND_DEBUG_DIRECTORY}/wind_debug_internal.h"
@@ -157,4 +159,3 @@ else()
     target_compile_options(dynamic_wind_demo_sources PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT dynamic_wind_demo)
-
