@@ -426,3 +426,17 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# Dynamic Wind Demo
+/out/
+/solutions/vs2026/
+/solutions/vs2022/
+!/solutions/src/
+!/solutions/src/demo/wind/debug/
+/.vs/
+/.vscode/
+/build/
+/CMakeUserPresets.json
+/imgui.ini
+*.user
+*.suo

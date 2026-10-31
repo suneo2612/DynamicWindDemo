@@ -1,0 +1,41 @@
+#version 430 core
+
+/**
+ * @file clear.comp
+ * @brief 更新先の風速格子の消去と管理空間の移動を行うコンピュートシェーダー。
+ */
+
+// 4×4×4 セルを一組として処理し、分配先の各風速成分を書き換える。
+layout(local_size_x=4, local_size_y=4, local_size_z=4) in;
+layout(r32i, binding=0) uniform writeonly iimage3D xField;  // X 成分の風速テクスチャ
+layout(r32i, binding=1) uniform writeonly iimage3D yField;  // Y 成分の風速テクスチャ
+layout(r32i, binding=2) uniform writeonly iimage3D zField;  // Z 成分の風速テクスチャ
+layout(r32i, binding=3) uniform readonly iimage3D oldX;     // 移動前の X 成分。重なる領域の値を引き継ぐ
+layout(r32i, binding=4) uniform readonly iimage3D oldY;     // 移動前の Y 成分。重なる領域の値を引き継ぐ
+layout(r32i, binding=5) uniform readonly iimage3D oldZ;     // 移動前の Z 成分。重なる領域の値を引き継ぐ
+uniform ivec3   size;           // 風速格子の寸法
+uniform int     moveRegion;     // 移動する領域のフラグ
+uniform ivec3   offset;         // 移動量
+uniform ivec3   initialWind;    // 新しく入る範囲の基本風
+
+void main() {
+
+    // 端数を含むワークグループが格子の外へアクセスしないようにする。
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(p, size))) return;
+
+    // 移動時は同じワールド座標の値を引き継ぎ、新しく入る範囲に基本風を入れる。
+    ivec3 wind = ivec3(0);
+    if (moveRegion != 0) {
+        ivec3 source = p + offset;
+        wind = initialWind;
+        if (all(greaterThanEqual(source, ivec3(0))) && all(lessThan(source, size))) {
+            wind = ivec3(imageLoad(oldX, source).x, imageLoad(oldY, source).x, imageLoad(oldZ, source).x);
+        }
+    }
+
+    // それぞれの成分をテクスチャに書き込む
+    imageStore(xField, p, ivec4(wind.x));
+    imageStore(yField, p, ivec4(wind.y));
+    imageStore(zField, p, ivec4(wind.z));
+}

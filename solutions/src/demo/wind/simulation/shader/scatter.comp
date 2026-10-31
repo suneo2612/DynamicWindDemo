@@ -1,0 +1,82 @@
+#version 430 core
+
+/**
+ * @file scatter.comp
+ * @brief 各セルの風を風向きに応じて隣接セルへ分配するコンピュートシェーダー。
+ */
+
+// 更新前の風を読み込み、初期化済みの更新先へ並列に分配する。
+layout(local_size_x=4, local_size_y=4, local_size_z=4) in;
+layout(r32i, binding=0) uniform readonly iimage3D oldX;
+layout(r32i, binding=1) uniform readonly iimage3D oldY;
+layout(r32i, binding=2) uniform readonly iimage3D oldZ;
+layout(r32i, binding=3) uniform iimage3D newX;
+layout(r32i, binding=4) uniform iimage3D newY;
+layout(r32i, binding=5) uniform iimage3D newZ;
+uniform ivec3 size;
+uniform float portion;
+uniform int speedDependent;
+uniform float fraction60;
+uniform float seconds;
+
+// 同じセルへ複数の分配元が書き込むため、各成分をアトミックに加算する。
+void addWind(ivec3 p, ivec3 v) {
+    imageAtomicAdd(newX, p, v.x);
+    imageAtomicAdd(newY, p, v.y);
+    imageAtomicAdd(newZ, p, v.z);
+}
+void main() {
+    // 格子外の起動は無視し、風がないセルは分配を省く。
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(p, size))) return;
+    ivec3 raw = ivec3(imageLoad(oldX,p).x, imageLoad(oldY,p).x, imageLoad(oldZ,p).x);
+    vec3 v = vec3(raw);
+    float speed = length(v);
+    if (speed == 0.0) return;
+
+    // 方式 B は元セルの風速を使い、周期を変えても時間あたりの残り方を揃える。
+    float cellPortion = portion;
+    if (speedDependent != 0) {
+        float fraction = fraction60 * min(speed / (65536.0 * 64.0), 1.0);
+        if (fraction <= 0.0) {
+            cellPortion = 0.0;
+        } else if (fraction >= 1.0) {
+            cellPortion = 1.0;
+        } else {
+            // 小さな割合でも丸めで消えないよう、対数と指数の近似を使う。
+            float loss = fraction < 0.001
+                ? fraction * (1.0 + fraction * (0.5 + fraction / 3.0))
+                : -log(1.0 - fraction);
+            float elapsedLoss = (loss * 60.0) * seconds;
+            cellPortion = elapsedLoss < 0.001
+                ? elapsedLoss * (1.0 - elapsedLoss * (0.5 - elapsedLoss / 6.0))
+                : 1.0 - exp(-elapsedLoss);
+        }
+    }
+
+    // 26 方向のうち風の前方にある方向の重みを合計し、分配比率を正規化する。
+    vec3 direction = v / speed;
+    float total = 0.0;
+    for (int z=-1; z<=1; ++z) for (int y=-1; y<=1; ++y) for (int x=-1; x<=1; ++x) {
+        ivec3 d = ivec3(x,y,z);
+        if (d == ivec3(0)) continue;
+        total += max(dot(direction, normalize(vec3(d))), 0.0);
+    }
+
+    // 方向ごとの分配量を固定小数点の整数に丸め、格子内の隣接セルへ加算する。
+    // 格子外への分配量も sent に含め、境界から流出した風として扱う。
+    ivec3 sent = ivec3(0);
+    for (int z=-1; z<=1; ++z) for (int y=-1; y<=1; ++y) for (int x=-1; x<=1; ++x) {
+        ivec3 d = ivec3(x,y,z);
+        if (d == ivec3(0)) continue;
+        float weight = max(dot(direction, normalize(vec3(d))), 0.0) / total;
+        ivec3 part = ivec3(round(v * (cellPortion * weight)));
+        sent += part;
+        ivec3 target = p + d;
+        if (all(greaterThanEqual(target, ivec3(0))) && all(lessThan(target, size)))
+            addWind(target, part);
+    }
+
+    // 実際に丸めた分配量を差し引き、残りを元のセルに残す。
+    addWind(p, raw - sent);
+}

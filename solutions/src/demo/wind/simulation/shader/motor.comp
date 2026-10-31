@@ -1,0 +1,157 @@
+#version 430 core
+
+/**
+ *  @file   motor.comp
+ *  @brief  風発生器のあたりを取ってセルごとの風入力を決める
+ */
+
+// 4×4×4 セルを一組として並列に処理する。
+layout(local_size_x=4, local_size_y=4, local_size_z=4) in; // 1 ワークグループあたりの X・Y・Z invocation 数
+
+// 発生器の情報
+struct Motor
+{
+    dvec4 positionRadius;  // 管理空間原点からの相対位置 XYZ と発生範囲の半径 W
+    dvec4 directionLength; // 正規化済み発生方向 XYZ と円錐・円柱の長さ W
+    dvec4 parameters;      // 風速、形状番号（球0・円錐1・円柱2）、発生方法（継続0・瞬間1）、距離減衰フラグ
+};
+
+// セルごとの発生器寄与の情報
+struct MotorCell
+{
+    vec4 continuous; // 継続風の合計 XYZ と個々の寄与の最大風速 W
+    vec4 instant;    // 瞬間風の合計 XYZ（W は未使用）
+};
+layout(std430, binding=0) writeonly buffer  Cells   { MotorCell cells[]; };     // セルごとの発生器寄与の出力先。X が最も速く変化する順
+layout(std430, binding=1) readonly  buffer  Motors  { Motor motors[]; };        // CPU から渡された発生器設定の一覧
+
+// CPU から渡される定数値
+uniform ivec3   size;           // 風速格子の X・Y・Z 方向のセル数
+uniform int     motorCount;     // 計算対象の発生器数
+uniform int     subdivisions;   // セル内の占有率判定で各軸を分割する数
+
+/**
+ * @brief   指定位置が発生器の形状内または境界上か判定する。
+ * @param   motor   判定対象の発生器設定。
+ * @param   point   管理空間内の判定位置。
+ * @return  位置が形状内または境界上なら true。
+ */
+bool insideShape(Motor motor, dvec3 point)
+{
+    // 管理空間内の発生器中心からの相対位置を求める。
+    dvec3   delta   =   point - motor.positionRadius.xyz;
+    double  radius  =   motor.positionRadius.w;
+
+    // 発生器の形状を取得する。
+    int shape = int(motor.parameters.y);
+
+    // 球は半径以内
+    if (shape == 0) return length(delta) <= radius;
+
+    // 円錐・円柱は発生器の向きに沿った範囲内に点があるか判定する
+    double along    =   dot(delta, motor.directionLength.xyz);
+    double extent   =   motor.directionLength.w;
+    if (along < 0.0 || along > extent) return false;
+
+    // 中心軸からの半径方向の距離を求める
+    double radial = length(delta - along * motor.directionLength.xyz);
+    if (shape == 1) radius *= along / extent;   // 円錐の場合は軸方向の位置に応じて半径をスケーリングする
+    return radial <= radius;
+}
+
+void main()
+{
+    // 格子外の起動を除き、この invocation が処理するセルを決める。
+    ivec3   p   =   ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(p, size))) return;
+    vec4    continuous  =   vec4(0.0);                  // 継続風の合計
+    vec4    instant     =   vec4(0.0);                  // 瞬間風の合計
+    dvec3   center      =   dvec3(p) + dvec3(0.5);      // セル中心の座標
+
+    // 各発生器について、セル内の占有率・寄与する風向・距離減衰を求める。
+    for (int i = 0; i < motorCount; ++i) 
+    {
+        // 風発生器の情報を取得する
+        Motor   motor   =   motors[i];
+        dvec3   delta   =   center - motor.positionRadius.xyz;  // セル中心から発生器中心へのベクトル
+        double  radius  =   motor.positionRadius.w;             // 発生器の半径
+        double  extent  =   motor.directionLength.w;            // 発生器の軸方向の長さ
+        int     shape   =   int(motor.parameters.y);            // 発生器の形状 (0: 球, 1: 円錐, 2: 円柱)
+
+        // セル中心から発生器中心への距離や軸方向・半径方向の距離を計算する
+        double          distance        =   length(delta);
+        double          along           =   dot(delta, motor.directionLength.xyz);
+        double          radial          =   length(delta - along * motor.directionLength.xyz);      // 軸方向からの半径方向の距離
+        const double    halfDiagonal    =   0.8660254037844387;                                     // セル中心から角までの長さ
+        double          tolerance       =   1e-12 * max(1.0, max(distance, max(radius, extent)));   // 許容誤差
+        bool            outside         =   false;  // セルが形状の外にあるかどうかのフラグ
+        bool            full            =   false;  // セルが完全に含まれるかどうかのフラグ
+
+        // セル中心から半対角分の距離を使い、形状との交差がない／完全に含まれるセルを判定する。
+        if (shape == 0) {
+            // 球
+            outside =   distance - halfDiagonal > radius + tolerance;
+            full    =   distance + halfDiagonal < radius - tolerance;
+        } else {
+            // 円錐なら軸方向に沿った外接半径と内接半径を計算する
+            double outerRadius = shape == 1 ? radius * clamp((along + halfDiagonal) / extent, 0.0, 1.0) : radius;
+            double innerRadius = shape == 1 ? radius * clamp((along - halfDiagonal) / extent, 0.0, 1.0) : radius;
+
+            // 外接半径と内接半径を用いて、セルが形状の外にあるかどうか、完全に含まれるかどうかを判定する。
+            outside = along + halfDiagonal < -tolerance || along - halfDiagonal > extent + tolerance ||
+                      radial - halfDiagonal > outerRadius + tolerance;
+            full = along - halfDiagonal > tolerance && along + halfDiagonal < extent - tolerance &&
+                   radial + halfDiagonal < innerRadius - tolerance;
+        }
+
+        // 外にあるセルはスキップ
+        if (outside) continue;
+
+        int count = 0;
+
+        // セル内の風の占有率を計算する
+        int total = subdivisions * subdivisions * subdivisions;
+        if (full) {
+            count = total;  // 100%
+        } else {
+            // 境界付近のセルだけを格子状に標本化し、内側にある標本数から占有率を近似する。
+            for (int z = 0; z < subdivisions; ++z) for (int y = 0; y < subdivisions; ++y) for (int x = 0; x < subdivisions; ++x)
+            {
+                // サンプル点を計算し、形状内にあるかどうかを判定する。
+                dvec3 samplePoint = dvec3(p) + (dvec3(x, y, z) + dvec3(0.5)) / double(subdivisions);
+                if (insideShape(motor, samplePoint)) ++count;
+            }
+        }
+        // これは当たっていない
+        if (count == 0) continue;
+
+        // 円柱は設定方向へ吹き、球と円錐は発生位置からセル中心へ向かう。
+        dvec3 windDirection = motor.directionLength.xyz;
+
+        // 球と円錐の場合、風は発生位置からセル中心からの距離だけ減る
+        if (shape != 2 && distance > 0.0) windDirection = delta / distance;
+        
+        // 有効時は球の半径方向、または軸方向の距離に応じて風速を減衰させる。
+        double falloff = 1.0;
+        if (motor.parameters.w != 0.0) {
+            double ratio    =   shape == 0 ? distance / radius : along / extent;    // 球なら距離に対する比、それ以外なら軸方向の比
+            falloff         =   clamp(1.0 - ratio, 0.0, 1.0);
+        }
+
+        // 風の速度は『風速×占有率×減衰』で計算
+        float   speed           =   float(motor.parameters.x * (double(count) / double(total)) * falloff);
+        vec3    contribution    =   vec3(windDirection) * speed;
+        // 継続風はベクトル合計と最大寄与風速を保持し、瞬間風はベクトル合計だけを保持する。
+        if (int(motor.parameters.z) == 0) {
+            continuous.xyz  +=  contribution;               // 継続のベクトル
+            continuous.w    =   max(continuous.w, speed);   // 最大寄与風速を更新
+        } else {
+            instant.xyz += contribution;                    // 瞬間のベクトル
+        }
+    }
+
+    // セル配列に発生器が入力する風を書き込む
+    int index = p.x + size.x * (p.y + size.y * p.z);    // 配列インデックスを計算
+    cells[index].continuous = continuous;               // 継続風を書き込む
+    cells[index].instant = instant;                     // 瞬間風を書き込む
+}

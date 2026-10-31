@@ -1,0 +1,83 @@
+#version 430 core
+
+/**
+ * @file finish.comp
+ * @brief 境界からの流入と風発生器を反映し、風速格子の更新を仕上げるコンピュートシェーダー。
+ */
+
+// 分配後の格子と、必要に応じてセルごとの発生器データを使用する。
+layout(local_size_x=4, local_size_y=4, local_size_z=4) in; // 1 ワークグループあたりの X・Y・Z invocation 数
+layout(r32i, binding=0) uniform iimage3D xField;            // 分配後の風速格子。X 成分を読み書きする
+layout(r32i, binding=1) uniform iimage3D yField;            // 分配後の風速格子。Y 成分を読み書きする
+layout(r32i, binding=2) uniform iimage3D zField;            // 分配後の風速格子。Z 成分を読み書きする
+
+// 風発生器の風発生能力
+struct MotorCell
+{
+    vec4 continuous; // 継続風の合計 XYZ と、個々の寄与の最大風速 W
+    vec4 instant;    // 瞬間風の合計 XYZ（W は未使用）
+};
+layout(std430, binding=0) readonly buffer Motors { MotorCell cells[]; };    // セルごとの発生器寄与。X が最も速く変化する順
+
+uniform ivec3   size;       // 風速格子の X・Y・Z 方向のセル数
+uniform vec3    baseWind;   // 管理空間全体に適用する基本風速（m/s）
+uniform float   portion;    // 格子外から流入する基本風の分配割合
+uniform float   blend;      // 現在風速を目標風速へ近づける補間係数（0～1）
+uniform int     hasMotors;  // セル別の発生器寄与を使う場合は 1
+void main() {
+
+    // 格子外の起動を除き、16.16 固定小数点の風速を実数に戻す。
+    ivec3 p = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(p, size))) return;
+    vec3 wind = vec3(imageLoad(xField,p).x, imageLoad(yField,p).x, imageLoad(zField,p).x) / 65536.0;
+
+    // 境界外にも基本風が存在すると仮定し、外側からの流入分を補う。
+    float baseSpeed = length(baseWind);
+    if (baseSpeed > 0.0) {
+
+        // 分配処理と同じ方向別の重みを求める。
+        vec3 direction = baseWind / baseSpeed;
+        float total = 0.0;
+        for (int z=-1; z<=1; ++z) for (int y=-1; y<=1; ++y) for (int x=-1; x<=1; ++x) {
+            ivec3 d = ivec3(x,y,z);
+            if (d == ivec3(0)) continue;
+            total += max(dot(direction, normalize(vec3(d))), 0.0);
+        }
+
+        // 供給元が格子外にある方向だけ、基本風の分配量を加算する。
+        for (int z=-1; z<=1; ++z) for (int y=-1; y<=1; ++y) for (int x=-1; x<=1; ++x) {
+            ivec3 d = ivec3(x,y,z);
+            if (d == ivec3(0)) continue;
+            ivec3 source = p - d;
+            if (any(lessThan(source, ivec3(0))) || any(greaterThanEqual(source, size))) {
+                float weight = max(dot(direction, normalize(vec3(d))), 0.0) / total;
+                wind += round(baseWind * (65536.0 * portion * weight)) / 65536.0;
+            }
+        }
+    }
+
+    // 継続風を基本風に合成し、両者の風速の大きい方を上限とする。
+    // 瞬間風は目標風速とは別に保持し、この更新で直接加える。
+    vec3 target = baseWind;
+    vec3 instant = vec3(0.0);
+    if (hasMotors != 0) {
+        int index = p.x + size.x * (p.y + size.y * p.z);
+        MotorCell motor = cells[index];
+        vec3 sum = baseWind + motor.continuous.xyz;
+        float magnitude = length(sum);
+        float limit = max(length(baseWind), motor.continuous.w);
+        target = magnitude > 0.0 ? sum * (min(magnitude, limit) / magnitude) : vec3(0.0);
+        instant = motor.instant.xyz;
+    }
+
+    // 合成した目標風速へ減衰させて瞬間風を加え、最大風速を制限する。
+    wind = mix(wind, target, blend) + instant;
+    float speed             =   length(wind);
+    if (speed > 64.0) wind  *=  64.0 / speed;   // 最大風速はビューフォートスケールの最大風速の2倍に設定
+
+    // 次回の分配で使用できるよう、固定小数点に戻して保存する。
+    ivec3 result = ivec3(round(wind * 65536.0));
+    imageStore(xField,p,ivec4(result.x));
+    imageStore(yField,p,ivec4(result.y));
+    imageStore(zField,p,ivec4(result.z));
+}

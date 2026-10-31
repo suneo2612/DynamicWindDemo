@@ -1,0 +1,14 @@
+#pragma once
+
+namespace shaders {
+inline constexpr char modelVertex[] = R"glsl(@MODEL_VERTEX_SOURCE@)glsl";
+inline constexpr char modelFragment[] = R"glsl(@MODEL_FRAGMENT_SOURCE@)glsl";
+inline constexpr char windClear[] = R"glsl(@WIND_CLEAR_SOURCE@)glsl";
+inline constexpr char windScatter[] = R"glsl(@WIND_SCATTER_SOURCE@)glsl";
+inline constexpr char windFinish[] = R"glsl(@WIND_FINISH_SOURCE@)glsl";
+inline constexpr char windMotor[] = R"glsl(@WIND_MOTOR_SOURCE@)glsl";
+inline constexpr char windDebugVertex[] = R"glsl(@WIND_DEBUG_VERTEX_SOURCE@)glsl";
+inline constexpr char windDebugFragment[] = R"glsl(@WIND_DEBUG_FRAGMENT_SOURCE@)glsl";
+inline constexpr char windArrowVertex[] = R"glsl(@WIND_ARROW_VERTEX_SOURCE@)glsl";
+inline constexpr char windArrowFragment[] = R"glsl(@WIND_ARROW_FRAGMENT_SOURCE@)glsl";
+}
